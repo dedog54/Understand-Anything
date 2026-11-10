@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import type { IncomingMessage, ServerResponse } from "http";
 import { validateReadingNotes, type ReadingNotesResult } from "./src/readingNotes";
 import { buildCodeNavigationIndex } from "./server/codeNavigation";
+import { getDashboardAccessToken } from "./server/accessToken";
 import {
   getGraphFreshnessBatch,
   type GraphFreshnessInput,
@@ -18,7 +19,7 @@ import {
 // Generate a one-time token when the server process starts.
 // This token is printed to the terminal and must be in the URL
 // to fetch knowledge-graph.json or diff-overlay.json.
-const ACCESS_TOKEN = process.env.UNDERSTAND_ACCESS_TOKEN || crypto.randomBytes(16).toString("hex");
+const ACCESS_TOKEN = getDashboardAccessToken(process.env.UNDERSTAND_ACCESS_TOKEN);
 const MAX_SOURCE_FILE_BYTES = 1024 * 1024;
 let codeParser: Promise<import("@understand-anything/core").PluginRegistry> | undefined;
 

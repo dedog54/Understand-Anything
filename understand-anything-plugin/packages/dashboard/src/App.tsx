@@ -21,6 +21,7 @@ import MobileLayout from "./components/MobileLayout";
 import { useIsMobile } from "./hooks/useIsMobile";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import type { KeyboardShortcut } from "./hooks/useKeyboardShortcuts";
+import { DashboardAccessError, readDashboardGraph } from "./accessToken";
 import { ThemeProvider } from "./themes/index.ts";
 import { ThemePicker } from "./components/ThemePicker.tsx";
 import type { ThemeConfig } from "./themes/index.ts";
@@ -96,10 +97,17 @@ function resolveInitialToken(): string | null {
 
 function App() {
   const [accessToken, setAccessToken] = useState<string | null>(resolveInitialToken);
+  const [accessExpired, setAccessExpired] = useState(false);
 
   const handleTokenValid = useCallback((token: string) => {
     sessionStorage.setItem(SESSION_TOKEN_KEY, token);
+    setAccessExpired(false);
     setAccessToken(token);
+  }, []);
+  const handleAccessExpired = useCallback(() => {
+    sessionStorage.removeItem(SESSION_TOKEN_KEY);
+    setAccessExpired(true);
+    setAccessToken(null);
   }, []);
 
   // In demo mode, skip token gate entirely
@@ -109,13 +117,13 @@ function App() {
 
   // Show the token gate when no token is available
   if (accessToken === null) {
-    return <TokenGate onTokenValid={handleTokenValid} />;
+    return <TokenGate onTokenValid={handleTokenValid} expired={accessExpired} />;
   }
 
-  return <Dashboard accessToken={accessToken} />;
+  return <Dashboard accessToken={accessToken} onAccessExpired={handleAccessExpired} />;
 }
 
-function Dashboard({ accessToken }: { accessToken: string }) {
+function Dashboard({ accessToken, onAccessExpired }: { accessToken: string; onAccessExpired?: () => void }) {
   const setGraph = useDashboardStore((s) => s.setGraph);
   const setDomainGraph = useDashboardStore((s) => s.setDomainGraph);
   const setDiffOverlay = useDashboardStore((s) => s.setDiffOverlay);
@@ -143,26 +151,7 @@ function Dashboard({ accessToken }: { accessToken: string }) {
 
   useEffect(() => {
     fetch(dataUrl("knowledge-graph.json", accessToken))
-      .then(async (res) => {
-        // Guard res.ok before parsing (matching the meta.json/config.json/
-        // diff-overlay.json/domain-graph.json fetches in this file). Without
-        // this, a serving/config failure returns a 404 JSON error body that
-        // gets parsed and handed to validateGraph, which fails project-metadata
-        // validation and surfaces the misleading "Invalid knowledge graph:
-        // Missing or invalid project metadata" instead of the real cause
-        // (graph file not found / GRAPH_DIR unset). See issues #288, #406.
-        if (!res.ok) {
-          let detail = `HTTP ${res.status}`;
-          try {
-            const body = await res.json();
-            if (body?.error) detail = body.error;
-          } catch {
-            /* non-JSON error body; keep the status code */
-          }
-          throw new Error(detail);
-        }
-        return res.json();
-      })
+      .then(readDashboardGraph)
       .then((data: unknown) => {
         const result = validateGraph(data);
         if (result.success && result.data) {
@@ -188,10 +177,11 @@ function Dashboard({ accessToken }: { accessToken: string }) {
         }
       })
       .catch((err) => {
+        if (err instanceof DashboardAccessError && onAccessExpired) { onAccessExpired(); return; }
         console.error("Failed to load knowledge graph:", err);
         setLoadError(`Failed to load knowledge graph: ${err instanceof Error ? err.message : String(err)}`);
       });
-  }, [setGraph]);
+  }, [setGraph, accessToken, onAccessExpired]);
 
   useEffect(() => {
     if (
