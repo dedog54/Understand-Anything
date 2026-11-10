@@ -5,7 +5,8 @@ export type GraphFreshnessUnknownReason =
   | "git-head-unavailable"
   | "graph-commit-unavailable"
   | "git-command-timeout"
-  | "freshness-request-failed";
+  | "freshness-request-failed"
+  | "authorization-expired";
 
 export type GraphFreshnessResult =
   | {
@@ -60,6 +61,7 @@ const UNKNOWN_REASONS = new Set<GraphFreshnessUnknownReason>([
   "graph-commit-unavailable",
   "git-command-timeout",
   "freshness-request-failed",
+  "authorization-expired",
 ]);
 
 const RELATIONS = new Set<GraphFreshnessRelation>([
@@ -164,12 +166,18 @@ export function shouldRequestFreshness(
   return !demoMode || Boolean(demoFreshnessUrl);
 }
 
+export class FreshnessAccessError extends Error {
+  constructor() { super("Dashboard access token expired"); this.name = "FreshnessAccessError"; }
+}
+export const FRESHNESS_REFRESH_EVENT = "ua:refresh-freshness";
+
 export async function requestFreshnessReport(
   url: string,
   signal: AbortSignal,
   fetcher: typeof fetch = fetch,
 ): Promise<DashboardFreshnessReport> {
   const response = await fetcher(url, { signal, cache: "no-store" });
+  if (response.status === 401 || response.status === 403) throw new FreshnessAccessError();
   if (!response.ok) throw new Error("Freshness request failed");
 
   const payload: unknown = await response.json();
@@ -185,12 +193,12 @@ interface FreshnessRefreshOptions {
   onResult: (report: DashboardFreshnessReport) => void;
 }
 
-function requestFailedReport(): DashboardFreshnessReport {
+function requestFailedReport(error?: unknown): DashboardFreshnessReport {
   return {
     graphs: {
       knowledge: {
         status: "unknown",
-        reason: "freshness-request-failed",
+        reason: error instanceof FreshnessAccessError ? "authorization-expired" : "freshness-request-failed",
       },
     },
   };
@@ -232,17 +240,19 @@ export function startFreshnessRefresh({
         ) {
           return;
         }
-        onResult(requestFailedReport());
+        onResult(requestFailedReport(error));
       });
   };
 
   const handleFocus: EventListener = () => refresh();
   target.addEventListener("focus", handleFocus);
+  target.addEventListener(FRESHNESS_REFRESH_EVENT, handleFocus);
   refresh();
 
   return () => {
     stopped = true;
     target.removeEventListener("focus", handleFocus);
+    target.removeEventListener(FRESHNESS_REFRESH_EVENT, handleFocus);
     activeController?.abort();
   };
 }

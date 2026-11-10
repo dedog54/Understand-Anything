@@ -23,6 +23,17 @@ function report(
 }
 
 describe("buildFreshnessBanner", () => {
+  it("explains a failed check in Chinese without implying source is outdated", () => {
+    const banner = buildFreshnessBanner(report({ status: "unknown", reason: "freshness-request-failed" }), "zh");
+    expect(banner?.title).toBe("暂时无法核对源码版本");
+    expect(banner?.action).toContain("可继续阅读");
+    expect(banner?.changedFiles).toEqual([]);
+  });
+  it("gives actionable guidance for an expired access URL", () => {
+    const banner = buildFreshnessBanner(report({ status: "unknown", reason: "authorization-expired" }), "zh");
+    expect(banner?.title).toBe("访问凭证已失效");
+    expect(banner?.action).toContain("完整访问链接");
+  });
   it("returns no banner for fresh or missing freshness data", () => {
     expect(buildFreshnessBanner(null)).toBeNull();
     expect(buildFreshnessBanner(report(fresh))).toBeNull();

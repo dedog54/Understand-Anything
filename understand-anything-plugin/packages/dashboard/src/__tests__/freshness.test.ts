@@ -4,6 +4,8 @@ import {
   requestFreshnessReport,
   shouldRequestFreshness,
   startFreshnessRefresh,
+  FreshnessAccessError,
+  FRESHNESS_REFRESH_EVENT,
   type DashboardFreshnessReport,
 } from "../freshness";
 
@@ -122,6 +124,10 @@ describe("isDashboardFreshnessReport", () => {
 });
 
 describe("requestFreshnessReport", () => {
+  it("distinguishes expired credentials from a generic connectivity failure", async () => {
+    const fetcher = vi.fn(async () => ({ ok: false, status: 403 })) as unknown as typeof fetch;
+    await expect(requestFreshnessReport("/staleness.json", new AbortController().signal, fetcher)).rejects.toBeInstanceOf(FreshnessAccessError);
+  });
   it("returns only a fully validated response", async () => {
     const signal = new AbortController().signal;
     const fetcher = vi.fn(async () => ({
@@ -165,6 +171,25 @@ describe("shouldRequestFreshness", () => {
 });
 
 describe("startFreshnessRefresh", () => {
+  it("supports explicit retry and removes that listener on cleanup", async () => {
+    const target = new EventTarget();
+    const load = vi.fn(async () => freshReport);
+    const stop = startFreshnessRefresh({ target, load, onResult: vi.fn() });
+    await flushPromises();
+    target.dispatchEvent(new Event(FRESHNESS_REFRESH_EVENT));
+    await flushPromises();
+    expect(load).toHaveBeenCalledTimes(2);
+    stop();
+    target.dispatchEvent(new Event(FRESHNESS_REFRESH_EVENT));
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+  it("explains an expired token without claiming the graph is stale", async () => {
+    const onResult = vi.fn();
+    const stop = startFreshnessRefresh({ target: new EventTarget(), load: async () => { throw new FreshnessAccessError(); }, onResult });
+    await flushPromises();
+    expect(onResult).toHaveBeenCalledWith({ graphs: { knowledge: { status: "unknown", reason: "authorization-expired" } } });
+    stop();
+  });
   it("loads initially and only reloads when the target receives focus", async () => {
     vi.useFakeTimers();
     const target = new EventTarget();

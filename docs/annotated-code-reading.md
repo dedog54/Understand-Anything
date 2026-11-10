@@ -6,11 +6,17 @@ This fork adds a reading guide to the local Dashboard source viewer. Business so
 
 - File responsibilities, flow context, and related files from the knowledge graph.
 - Passage explanations displayed inline, with clickable line ranges that scroll and highlight the corresponding code.
-- Navigation to related files while keeping the reader open.
+- A read-only CodeMirror 6 editor with Ctrl/Cmd-click and F12 to open indexed definitions.
+- Same-file and cross-file navigation, an explicit candidate list for overloaded or same-named definitions, and Back / Alt-Left to return to the previous line and scroll position.
+- Navigation to related files while keeping the reader open; Ctrl/Cmd-F for in-file search.
 - A toggle to hide explanations, Scala/Java highlighting, and a larger reading panel.
 - Source-hash validation: outdated notes are hidden until reviewed.
 
-Navigation covers graph-backed files and annotated passages. It does not provide IDE-style go-to-definition for arbitrary identifiers. Notes are authored separately; installing this extension does not automatically explain every file.
+The local server preprocesses declarations using the existing Tree-sitter parsers when the source viewer requests its index. It indexes actual source locations, independent of any AI-generated line numbers. The index and source preview include source hashes; a stale target is opened without applying outdated line numbers and the reader offers **Rebuild index**.
+
+Navigation covers indexed graph files and annotated passages. It is a declaration lookup, not compiler-level receiver/type resolution: same-named definitions remain explicit candidates, and external/unindexed symbols are not guessed. The server indexes up to 1,000 graph files / 16 MiB, with the same 1 MiB per-file limit as source previews, and reports skipped files. It caches parsed declarations by source hash in memory and writes no business source files.
+
+Notes are authored separately; installing this extension does not automatically explain every file. Version-check failures appear as compact, localized status messages with a retry action. Expired access URLs are distinguished from source changes.
 
 ## Add notes
 

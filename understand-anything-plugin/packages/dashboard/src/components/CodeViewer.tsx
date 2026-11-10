@@ -1,19 +1,13 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { Highlight, themes, Prism } from "prism-react-renderer";
+import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useDashboardStore } from "../store";
 import { useI18n } from "../contexts/I18nContext";
 import CodeReadingGuide from "./CodeReadingGuide";
 import type { ReadingNotesResult } from "../readingNotes";
-
-Prism.languages.scala = Prism.languages.extend("clike", {
-  keyword: /\b(?:abstract|case|catch|class|def|do|else|extends|false|final|finally|for|forSome|if|implicit|import|lazy|match|new|null|object|override|package|private|protected|return|sealed|super|this|throw|trait|true|try|type|val|var|while|with|yield)\b/,
-  "class-name": /\b[A-Z][\w$]*\b/,
-});
-Prism.languages.java = Prism.languages.extend("clike", {
-  keyword: /\b(?:abstract|assert|boolean|break|byte|case|catch|char|class|const|continue|default|do|double|else|enum|extends|final|finally|float|for|if|implements|import|instanceof|int|interface|long|native|new|package|private|protected|public|return|short|static|strictfp|super|switch|synchronized|this|throw|throws|transient|try|void|volatile|while|record|sealed|permits|var)\b/,
-});
+import SourceEditor, { type EditorLocation, type SourceEditorHandle } from "./SourceEditor";
+import { findDefinitions, isCodeNavigationIndex, type CodeNavigationIndex, type CodeSymbol } from "../codeNavigation";
+const NO_NOTES: NonNullable<ReadingNotesResult["notes"]> = [];
 
 interface CodeViewerProps {
   accessToken: string;
@@ -26,6 +20,7 @@ interface SourceFile {
   path: string;
   language: string;
   content: string;
+  sha256?: string;
   sizeBytes: number;
   lineCount: number;
   readingNotes?: ReadingNotesResult;
@@ -158,22 +153,35 @@ export default function CodeViewer({
   // source for line numbers / lineRange highlighting.
   const [mdView, setMdView] = useState<"rendered" | "source">("rendered");
   const [showGuide, setShowGuide] = useState(true);
-  const [passage, setPassage] = useState<{ start: number; end: number; id?: string } | null>(null);
-  const codeRef = useRef<HTMLDivElement>(null);
+  const [passage, setPassage] = useState<{ start: number; end: number; id?: string; filePath?: string; sha256?: string; scrollTop?: number } | null>(null);
+  const editorRef = useRef<SourceEditorHandle>(null);
+  const [index, setIndex] = useState<CodeNavigationIndex | null>(null);
+  const [indexVersion, setIndexVersion] = useState(0);
+  const [navigationMessage, setNavigationMessage] = useState("");
+  const [candidates, setCandidates] = useState<CodeSymbol[]>([]);
+  const [history, setHistory] = useState<{ nodeId: string; filePath: string; location: EditorLocation; sha256?: string }[]>([]);
   const { t, localeKey } = useI18n();
   const chinese = localeKey.startsWith("zh");
-  useEffect(() => { setPassage(null); }, [node?.id]);
   const jumpTo = (start: number, end: number, id?: string) => {
-    setPassage({ start, end, id });
+    setPassage({ start, end, id, filePath: node?.filePath });
     setMdView("source");
   };
   useEffect(() => {
-    const line = passage?.start ?? node?.lineRange?.[0];
-    if (!line || state.status !== "loaded") return;
-    const frame = requestAnimationFrame(() => codeRef.current?.querySelector(`[data-source-line="${line}"]`)
-      ?.scrollIntoView({ block: "center", behavior: "smooth" }));
-    return () => cancelAnimationFrame(frame);
-  }, [passage, node?.lineRange, state.status]);
+    if (!graph || accessToken === "__demo__") return;
+    const controller = new AbortController();
+    setIndex(null);
+    fetch(`/code-navigation.json?${new URLSearchParams({ token: accessToken })}`, { signal: controller.signal, cache: "no-store" })
+      .then(async res => {
+        if (!res.ok) throw new Error();
+        const data: unknown = await res.json();
+        if (!isCodeNavigationIndex(data)) throw new Error();
+        if (!controller.signal.aborted) { setIndex(data); setNavigationMessage(""); }
+      }).catch(() => {
+        if (!controller.signal.aborted) setNavigationMessage(chinese ? "符号索引暂不可用，可重新建立索引。" : "Symbol index unavailable. Rebuild to retry.");
+      });
+    return () => controller.abort();
+  }, [accessToken, graph, indexVersion, chinese]);
+  useEffect(() => { setHistory([]); setCandidates([]); }, [graph]);
 
   useEffect(() => {
     if (!node?.filePath) {
@@ -214,10 +222,13 @@ export default function CodeViewer({
   }, [accessToken, node?.filePath]);
 
   const highlightedRange = useMemo(() => {
-    if (passage) return passage;
+    if (passage?.filePath === node?.filePath) {
+      if (passage?.sha256 && passage.sha256 !== state.source?.sha256) return null;
+      return passage;
+    }
     if (!node?.lineRange) return null;
     return { start: node.lineRange[0], end: node.lineRange[1] };
-  }, [node?.lineRange, passage]);
+  }, [node?.lineRange, node?.filePath, passage, state.source?.sha256]);
 
   if (!node) {
     return (
@@ -227,7 +238,7 @@ export default function CodeViewer({
     );
   }
 
-  const source = state.source;
+  const source = state.source?.path === node.filePath ? state.source : null;
   const language = source?.language ?? fallbackLanguage(node.filePath);
   const isMarkdown = language === "markdown";
   const showRendered = isMarkdown && mdView === "rendered";
@@ -236,6 +247,42 @@ export default function CodeViewer({
     : t.codeViewer.fullFile;
   const isModal = presentation === "modal";
   const handleClose = onClose ?? closeCodeViewer;
+  const navigate = (id: string, symbol?: CodeSymbol) => {
+    if (node.filePath) setHistory(old => [...old, { nodeId: node.id, filePath: node.filePath!,
+      location: editorRef.current?.getLocation() ?? { line: 1, scrollTop: 0 }, sha256: source?.sha256 }].slice(-50));
+    setCandidates([]);
+    setNavigationMessage("");
+    setPassage(symbol ? { start: symbol.startLine, end: symbol.endLine, filePath: symbol.filePath, sha256: symbol.sha256 } : null);
+    setMdView("source");
+    useDashboardStore.getState().selectNode(id);
+    useDashboardStore.setState({ codeViewerNodeId: id });
+  };
+  const followSymbol = (symbol: CodeSymbol) => {
+    const target = graph?.nodes.find(n => n.filePath === symbol.filePath && n.name === symbol.name && n.type === symbol.kind)
+      ?? graph?.nodes.find(n => n.filePath === symbol.filePath);
+    if (target) navigate(target.id, symbol);
+  };
+  const lookup = (name: string, receiver?: string) => {
+    if (!index) { setNavigationMessage(chinese ? "符号索引尚未就绪，请稍后重试。" : "The symbol index is not ready yet."); return; }
+    const results = findDefinitions(index, name, node.filePath ?? "", receiver);
+    if (results.length === 1) followSymbol(results[0]);
+    else {
+      setCandidates(results);
+      setNavigationMessage(results.length ? (chinese ? `“${name}” 有多个定义，请选择：` : `Choose a definition for “${name}”:`)
+        : (chinese ? `“${name}” 在已索引的图谱文件中没有定义。` : `No definition for “${name}” in indexed graph files.`));
+    }
+  };
+  const goBack = () => {
+    const previous = history[history.length - 1];
+    if (!previous) return;
+    setHistory(old => old.slice(0, -1));
+    setCandidates([]); setNavigationMessage("");
+    setPassage({ start: previous.location.line, end: previous.location.line, filePath: previous.filePath,
+      sha256: previous.sha256, scrollTop: previous.location.scrollTop });
+    useDashboardStore.getState().selectNode(previous.nodeId);
+    useDashboardStore.setState({ codeViewerNodeId: previous.nodeId });
+  };
+  const staleIndex = Boolean(passage?.filePath === source?.path && passage?.sha256 && passage.sha256 !== source?.sha256);
 
   return (
     <div className="h-full w-full flex flex-col bg-surface overflow-hidden">
@@ -294,11 +341,24 @@ export default function CodeViewer({
         </div>
       </div>
 
+      <div className="shrink-0 px-4 py-2 flex flex-wrap items-center gap-3 border-b border-border-subtle text-xs bg-surface">
+        <button type="button" onClick={goBack} disabled={!history.length} className="text-accent disabled:opacity-30">← {chinese ? "返回上一处" : "Back"}</button>
+        <span className="text-text-muted">Ctrl / ⌘ + {chinese ? "点击" : "click"} · F12 {chinese ? "查看索引定义" : "indexed definitions"} · Ctrl+F {chinese ? "查找" : "find"}</span>
+        <button type="button" onClick={() => setIndexVersion(v => v + 1)} className="ml-auto text-accent">{chinese ? "重建索引" : "Rebuild index"}</button>
+        <span className="text-text-muted">{index ? `${index.files.length} ${chinese ? "个图谱文件" : "graph files"}${index.skipped.length ? ` · ${index.skipped.length} ${chinese ? "个未索引" : "not indexed"}` : ""}` : (chinese ? "索引加载中" : "Loading index")}</span>
+      </div>
+      {(navigationMessage || staleIndex) && <div role="status" className="shrink-0 border-b border-border-subtle p-3 text-xs bg-elevated text-text-secondary max-h-48 overflow-auto">
+        <p>{staleIndex ? (chinese ? "目标源码已变化，已停止行号跳转，请重建索引。" : "Target source changed. Rebuild the index before jumping.") : navigationMessage}</p>
+        {candidates.map(symbol => <button key={symbol.id} type="button" onClick={() => followSymbol(symbol)} className="block w-full text-left mt-2 rounded p-2 hover:bg-accent/10 text-accent">
+          {symbol.owner ? `${symbol.owner}.` : ""}{symbol.name} · {symbol.filePath}:L{symbol.startLine}
+        </button>)}
+      </div>}
+
       <div className="flex-1 min-h-0 flex flex-col md:flex-row overflow-hidden">
       {showGuide && <CodeReadingGuide node={node} graph={activeGraph?.nodes.some(n => n.id === node.id) ? activeGraph : graph}
         notes={state.source?.path === node.filePath ? state.source?.readingNotes : undefined} chinese={chinese} onJump={jumpTo}
-        onNavigate={id => { useDashboardStore.getState().selectNode(id); useDashboardStore.setState({ codeViewerNodeId: id }); }} />}
-      <div ref={codeRef} className="flex-1 min-w-0 min-h-0 overflow-auto bg-root">
+        onNavigate={id => navigate(id)} />}
+      <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden bg-root">
         {state.status === "loading" && (
           <div className="p-5 text-sm text-text-muted">{t.codeViewer.loading}</div>
         )}
@@ -314,7 +374,7 @@ export default function CodeViewer({
 
         {source && (
           <>
-            <div className="px-4 py-2 border-b border-border-subtle bg-surface text-[11px] text-text-muted flex items-center justify-between">
+            <div className="shrink-0 px-4 py-2 border-b border-border-subtle bg-surface text-[11px] text-text-muted flex items-center justify-between">
               <span>{source.lineCount} {t.codeViewer.linesLabel}</span>
               <div className="flex items-center gap-3">
                 {isMarkdown && (
@@ -339,55 +399,11 @@ export default function CodeViewer({
                 <span>{formatBytes(source.sizeBytes)}</span>
               </div>
             </div>
-            {showRendered && <MarkdownView content={source.content} />}
+            {showRendered && <div className="flex-1 overflow-auto"><MarkdownView content={source.content} /></div>}
             {!showRendered && (
-            <Highlight code={source.content} language={language} theme={themes.vsDark}>
-              {({ className, style, tokens, getLineProps, getTokenProps }) => (
-                <pre
-                  className={`${className} min-w-max p-0 m-0 ${
-                    isModal ? "text-xs leading-5" : "text-[11px] leading-5"
-                  } font-mono`}
-                  style={{ ...style, background: "transparent" }}
-                >
-                  {tokens.map((line, index) => {
-                    const lineNumber = index + 1;
-                    const isHighlighted =
-                      highlightedRange !== null &&
-                      lineNumber >= highlightedRange.start &&
-                      lineNumber <= highlightedRange.end;
-                    const lineProps = getLineProps({ line });
-                    return (
-                      <Fragment key={lineNumber}>
-                      {showGuide && source.readingNotes?.notes.filter(note => note.startLine === lineNumber).map(note => (
-                        <div key={note.id} data-reading-note={note.id} className="whitespace-normal font-sans text-xs leading-relaxed border-l-2 border-accent bg-accent/10 mx-3 my-3 px-4 py-3 max-w-3xl">
-                          <button type="button" onClick={() => jumpTo(note.startLine, note.endLine, note.id)} className="text-accent text-left font-semibold hover:underline">
-                            L{note.startLine}–{note.endLine} · {note.title}
-                          </button>
-                          <p className="text-text-primary mt-1 whitespace-pre-wrap">{note.explanation}</p>
-                        </div>
-                      ))}
-                      <div
-                        {...lineProps}
-                        data-source-line={lineNumber}
-                        className={`${lineProps.className} flex ${
-                          isHighlighted ? "bg-accent/15" : "hover:bg-elevated/40"
-                        }`}
-                      >
-                        <span className="w-12 shrink-0 select-none border-r border-border-subtle pr-3 text-right text-text-muted bg-surface/60">
-                          {lineNumber}
-                        </span>
-                        <span className="pl-3 pr-6 whitespace-pre">
-                          {line.map((token, key) => (
-                            <span key={key} {...getTokenProps({ token })} />
-                          ))}
-                        </span>
-                      </div>
-                      </Fragment>
-                    );
-                  })}
-                </pre>
-              )}
-            </Highlight>
+            <SourceEditor ref={editorRef} filePath={source.path} content={source.content} language={language}
+              notes={showGuide ? source.readingNotes?.notes ?? NO_NOTES : NO_NOTES} range={highlightedRange}
+              onNote={jumpTo} onDefinition={lookup} onBack={goBack} />
             )}
           </>
         )}

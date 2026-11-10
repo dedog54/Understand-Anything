@@ -5,8 +5,10 @@ import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
+import { pathToFileURL } from "node:url";
 import type { IncomingMessage, ServerResponse } from "http";
 import { validateReadingNotes, type ReadingNotesResult } from "./src/readingNotes";
+import { buildCodeNavigationIndex } from "./server/codeNavigation";
 import {
   getGraphFreshnessBatch,
   type GraphFreshnessInput,
@@ -18,6 +20,23 @@ import {
 // to fetch knowledge-graph.json or diff-overlay.json.
 const ACCESS_TOKEN = process.env.UNDERSTAND_ACCESS_TOKEN || crypto.randomBytes(16).toString("hex");
 const MAX_SOURCE_FILE_BYTES = 1024 * 1024;
+let codeParser: Promise<import("@understand-anything/core").PluginRegistry> | undefined;
+
+async function readCodeNavigationIndex() {
+  const graphFile = findGraphFile("knowledge-graph.json");
+  if (!graphFile) return rejectFileRequest("No knowledge graph found", 404);
+  codeParser ??= (async () => {
+    // A native dynamic import preserves the core package's WASM resolution base.
+    const core = await import(/* @vite-ignore */ pathToFileURL(path.resolve(__dirname, "../core/dist/index.js")).href);
+    const tree = new core.TreeSitterPlugin(core.builtinLanguageConfigs.filter((c: { treeSitter?: unknown }) => c.treeSitter));
+    await tree.init();
+    const registry = new core.PluginRegistry();
+    registry.register(tree);
+    return registry;
+  })().catch(error => { codeParser = undefined; throw error; });
+  return { statusCode: 200, payload: buildCodeNavigationIndex(projectRootFromGraphFile(graphFile),
+    JSON.parse(fs.readFileSync(graphFile, "utf8")), await codeParser) };
+}
 
 // Legacy directory first — projects analyzed before the `.ua` rename keep
 // their existing `.understand-anything/` data.
@@ -197,6 +216,7 @@ function readSourceFile(url: URL) {
       path: safeRelativePath,
       language: detectLanguage(relativeToRoot),
       content,
+      sha256: crypto.createHash("sha256").update(buffer).digest("hex"),
       sizeBytes: buffer.byteLength,
       lineCount,
       readingNotes,
@@ -279,7 +299,7 @@ export function createDashboardDataMiddleware(
 ): DashboardDataMiddleware {
   return (req, res, next) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1:5173");
-    if (url.pathname !== "/staleness.json") {
+    if (url.pathname !== "/staleness.json" && url.pathname !== "/code-navigation.json") {
       next();
       return;
     }
@@ -291,10 +311,10 @@ export function createDashboardDataMiddleware(
       return;
     }
 
-    void readGraphFreshness()
+    void (url.pathname === "/code-navigation.json" ? readCodeNavigationIndex() : readGraphFreshness())
       .then((result) => sendJson(res, result.statusCode, result.payload))
       .catch(() => {
-        sendJson(res, 500, { error: "Failed to read graph freshness" });
+        sendJson(res, 500, { error: "Failed to prepare graph data" });
       });
   };
 }
