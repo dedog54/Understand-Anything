@@ -1,9 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
-import { Highlight, themes } from "prism-react-renderer";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Highlight, themes, Prism } from "prism-react-renderer";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useDashboardStore } from "../store";
 import { useI18n } from "../contexts/I18nContext";
+import CodeReadingGuide from "./CodeReadingGuide";
+import type { ReadingNotesResult } from "../readingNotes";
+
+Prism.languages.scala = Prism.languages.extend("clike", {
+  keyword: /\b(?:abstract|case|catch|class|def|do|else|extends|false|final|finally|for|forSome|if|implicit|import|lazy|match|new|null|object|override|package|private|protected|return|sealed|super|this|throw|trait|true|try|type|val|var|while|with|yield)\b/,
+  "class-name": /\b[A-Z][\w$]*\b/,
+});
+Prism.languages.java = Prism.languages.extend("clike", {
+  keyword: /\b(?:abstract|assert|boolean|break|byte|case|catch|char|class|const|continue|default|do|double|else|enum|extends|final|finally|float|for|if|implements|import|instanceof|int|interface|long|native|new|package|private|protected|public|return|short|static|strictfp|super|switch|synchronized|this|throw|throws|transient|try|void|volatile|while|record|sealed|permits|var)\b/,
+});
 
 interface CodeViewerProps {
   accessToken: string;
@@ -18,6 +28,7 @@ interface SourceFile {
   content: string;
   sizeBytes: number;
   lineCount: number;
+  readingNotes?: ReadingNotesResult;
 }
 
 type SourceState =
@@ -34,6 +45,8 @@ function fallbackLanguage(filePath: string | undefined): string {
   const ext = filePath?.split(".").pop()?.toLowerCase();
   const byExt: Record<string, string> = {
     css: "css",
+    scala: "scala",
+    java: "java",
     go: "go",
     html: "markup",
     js: "javascript",
@@ -144,7 +157,23 @@ export default function CodeViewer({
   // Markdown files default to the rendered view (#555); toggle back to
   // source for line numbers / lineRange highlighting.
   const [mdView, setMdView] = useState<"rendered" | "source">("rendered");
-  const { t } = useI18n();
+  const [showGuide, setShowGuide] = useState(true);
+  const [passage, setPassage] = useState<{ start: number; end: number; id?: string } | null>(null);
+  const codeRef = useRef<HTMLDivElement>(null);
+  const { t, localeKey } = useI18n();
+  const chinese = localeKey.startsWith("zh");
+  useEffect(() => { setPassage(null); }, [node?.id]);
+  const jumpTo = (start: number, end: number, id?: string) => {
+    setPassage({ start, end, id });
+    setMdView("source");
+  };
+  useEffect(() => {
+    const line = passage?.start ?? node?.lineRange?.[0];
+    if (!line || state.status !== "loaded") return;
+    const frame = requestAnimationFrame(() => codeRef.current?.querySelector(`[data-source-line="${line}"]`)
+      ?.scrollIntoView({ block: "center", behavior: "smooth" }));
+    return () => cancelAnimationFrame(frame);
+  }, [passage, node?.lineRange, state.status]);
 
   useEffect(() => {
     if (!node?.filePath) {
@@ -185,9 +214,10 @@ export default function CodeViewer({
   }, [accessToken, node?.filePath]);
 
   const highlightedRange = useMemo(() => {
+    if (passage) return passage;
     if (!node?.lineRange) return null;
     return { start: node.lineRange[0], end: node.lineRange[1] };
-  }, [node?.lineRange]);
+  }, [node?.lineRange, passage]);
 
   if (!node) {
     return (
@@ -234,6 +264,9 @@ export default function CodeViewer({
           )}
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          <button type="button" onClick={() => setShowGuide(v => !v)} aria-pressed={showGuide} className="text-xs px-2 py-1 rounded border border-border-subtle text-accent hover:bg-accent/10">
+            {showGuide ? (chinese ? "收起注释" : "Hide guide") : (chinese ? "辅助阅读" : "Reading guide")}
+          </button>
           {onExpand && (
             <button
               type="button"
@@ -261,7 +294,11 @@ export default function CodeViewer({
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-auto bg-root">
+      <div className="flex-1 min-h-0 flex flex-col md:flex-row overflow-hidden">
+      {showGuide && <CodeReadingGuide node={node} graph={activeGraph?.nodes.some(n => n.id === node.id) ? activeGraph : graph}
+        notes={state.source?.path === node.filePath ? state.source?.readingNotes : undefined} chinese={chinese} onJump={jumpTo}
+        onNavigate={id => { useDashboardStore.getState().selectNode(id); useDashboardStore.setState({ codeViewerNodeId: id }); }} />}
+      <div ref={codeRef} className="flex-1 min-w-0 min-h-0 overflow-auto bg-root">
         {state.status === "loading" && (
           <div className="p-5 text-sm text-text-muted">{t.codeViewer.loading}</div>
         )}
@@ -320,9 +357,18 @@ export default function CodeViewer({
                       lineNumber <= highlightedRange.end;
                     const lineProps = getLineProps({ line });
                     return (
+                      <Fragment key={lineNumber}>
+                      {showGuide && source.readingNotes?.notes.filter(note => note.startLine === lineNumber).map(note => (
+                        <div key={note.id} data-reading-note={note.id} className="whitespace-normal font-sans text-xs leading-relaxed border-l-2 border-accent bg-accent/10 mx-3 my-3 px-4 py-3 max-w-3xl">
+                          <button type="button" onClick={() => jumpTo(note.startLine, note.endLine, note.id)} className="text-accent text-left font-semibold hover:underline">
+                            L{note.startLine}–{note.endLine} · {note.title}
+                          </button>
+                          <p className="text-text-primary mt-1 whitespace-pre-wrap">{note.explanation}</p>
+                        </div>
+                      ))}
                       <div
-                        key={lineNumber}
                         {...lineProps}
+                        data-source-line={lineNumber}
                         className={`${lineProps.className} flex ${
                           isHighlighted ? "bg-accent/15" : "hover:bg-elevated/40"
                         }`}
@@ -336,6 +382,7 @@ export default function CodeViewer({
                           ))}
                         </span>
                       </div>
+                      </Fragment>
                     );
                   })}
                 </pre>
@@ -344,6 +391,7 @@ export default function CodeViewer({
             )}
           </>
         )}
+      </div>
       </div>
     </div>
   );

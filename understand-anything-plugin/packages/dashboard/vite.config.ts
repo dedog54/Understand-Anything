@@ -6,6 +6,7 @@ import path from "path";
 import fs from "fs";
 import crypto from "crypto";
 import type { IncomingMessage, ServerResponse } from "http";
+import { validateReadingNotes, type ReadingNotesResult } from "./src/readingNotes";
 import {
   getGraphFreshnessBatch,
   type GraphFreshnessInput,
@@ -84,6 +85,7 @@ function detectLanguage(filePath: string): string {
   const ext = path.extname(filePath).slice(1).toLowerCase();
   const byExt: Record<string, string> = {
     bash: "bash",
+    scala: "scala",
     c: "c",
     cc: "cpp",
     cpp: "cpp",
@@ -175,6 +177,20 @@ function readSourceFile(url: URL) {
   if (buffer.includes(0)) return rejectFileRequest("Binary files cannot be previewed", 415);
 
   const content = buffer.toString("utf8");
+  const lineCount = content.length === 0 ? 0 : content.split(/\r\n|\n|\r/).length;
+  const projectKey = crypto.createHash("sha256").update(fs.realpathSync(projectRoot)).digest("hex").slice(0, 16);
+  const notesDirectory = process.env.UNDERSTAND_READING_NOTES_DIR;
+  const notesFile = [
+    path.join(path.dirname(graphFile), "code-notes.json"),
+    ...(notesDirectory ? [path.join(notesDirectory, `${projectKey}.json`)] : []),
+  ].find(p => fs.existsSync(p));
+  let readingNotes: ReadingNotesResult = { status: "missing", notes: [] };
+  if (notesFile) {
+    try {
+      readingNotes = validateReadingNotes(JSON.parse(fs.readFileSync(notesFile, "utf8")), safeRelativePath,
+        crypto.createHash("sha256").update(buffer).digest("hex"), lineCount);
+    } catch { readingNotes = { status: "invalid", notes: [] }; }
+  }
   return {
     statusCode: 200,
     payload: {
@@ -182,7 +198,8 @@ function readSourceFile(url: URL) {
       language: detectLanguage(relativeToRoot),
       content,
       sizeBytes: buffer.byteLength,
-      lineCount: content.length === 0 ? 0 : content.split(/\r\n|\n|\r/).length,
+      lineCount,
+      readingNotes,
     },
   };
 }

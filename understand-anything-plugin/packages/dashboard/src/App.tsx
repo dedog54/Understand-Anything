@@ -714,7 +714,7 @@ function DashboardContent({
 
         {/* Code viewer slide-up overlay (collapsed state) */}
         {codeViewerOpen && !codeViewerExpanded && (
-          <div className="absolute bottom-0 left-0 right-0 h-[40vh] bg-surface border-t border-border-subtle animate-slide-up z-20 overflow-hidden">
+          <div className="absolute bottom-0 left-0 right-0 h-[60vh] bg-surface border-t border-border-subtle animate-slide-up z-20 overflow-hidden">
             <Suspense fallback={null}>
               <CodeViewer accessToken={accessToken} onExpand={expandCodeViewer} />
             </Suspense>

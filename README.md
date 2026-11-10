@@ -1,5 +1,7 @@
 <h1 align="center">Understand Anything</h1>
 
+This fork adds [annotated code reading](docs/annotated-code-reading.md): independent passage notes, click-to-highlight navigation, and graph context inside the local Dashboard source viewer.
+
 <p align="center">
   <strong>Turn any codebase, knowledge base, or docs into an interactive knowledge graph you can explore, search, and ask questions about.</strong>
   <br />
