@@ -14,6 +14,13 @@ function clock() {
 }
 
 describe("reader navigation motion", () => {
+  it("keeps a distant same-file jump animated rather than snapping instantly", () => {
+    const surface = new Surface(), time = clock(); surface.scrollHeight = 40000;
+    animateReaderScroll(surface, () => 20000, { clock: time.scheduler });
+    expect(surface.scrollTop).toBe(0);
+    time.tick(100); expect(surface.scrollTop).toBeGreaterThan(0); expect(surface.scrollTop).toBeLessThan(20000);
+    time.tick(400); expect(surface.scrollTop).toBe(20000);
+  });
   it("eases toward the destination and lands precisely", () => {
     const surface = new Surface(), time = clock(); let finished = false;
     animateReaderScroll(surface, () => 1000, { clock: time.scheduler, onFinish: () => { finished = true; } });

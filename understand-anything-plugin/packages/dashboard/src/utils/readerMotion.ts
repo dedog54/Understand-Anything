@@ -24,7 +24,7 @@ export function animateReaderScroll(surface: ScrollSurface, destination: () => n
     return () => {};
   }
   const clock = options.clock ?? { now: () => performance.now(), request: (callback: FrameRequestCallback) => requestAnimationFrame(callback), cancel: (id: number) => cancelAnimationFrame(id) };
-  const duration = Math.min(340, Math.max(180, distance * 0.18));
+  const duration = Math.min(420, Math.max(240, distance * 0.18));
   const startedAt = clock.now();
   let frame = 0;
   let stopped = false;

@@ -10,6 +10,7 @@ import { python } from "@codemirror/legacy-modes/mode/python";
 import { tags } from "@lezer/highlight";
 import type { ReadingNote } from "../readingNotes";
 import { animateReaderScroll, readerPrefersReducedMotion } from "../utils/readerMotion";
+import { lookupIntent } from "../codeNavigation";
 
 export interface EditorLocation { line: number; scrollTop: number }
 export interface SourceEditorHandle { getLocation(): EditorLocation }
@@ -20,7 +21,7 @@ interface Props {
   notes: ReadingNote[];
   range: { start: number; end: number; scrollTop?: number } | null;
   onNote: (start: number, end: number, id?: string) => void;
-  onDefinition: (word: string, receiver?: string) => void;
+  onDefinition: (word: string, receiver?: string, intent?: "package" | "symbol") => void;
   onBack: () => void;
 }
 
@@ -94,7 +95,7 @@ const SourceEditor = forwardRef<SourceEditorHandle, Props>(function SourceEditor
       const name = view.state.sliceDoc(word.from, word.to);
       const before = view.state.sliceDoc(Math.max(0, word.from - 120), word.from);
       const receiver = before.match(/([\w$]+)\s*\.\s*$/)?.[1];
-      latest.current.onDefinition(name, receiver);
+      latest.current.onDefinition(name, receiver, lookupIntent(view.state.sliceDoc(view.state.doc.lineAt(word.from).from, word.from)));
       return true;
     };
     const languages: Record<string, Extension> = { scala: StreamLanguage.define(scala), java: StreamLanguage.define(java), cpp: StreamLanguage.define(cpp), c: StreamLanguage.define(cpp), javascript: StreamLanguage.define(javascript), typescript: StreamLanguage.define(typescript), json: StreamLanguage.define(json), python: StreamLanguage.define(python) };
@@ -138,7 +139,7 @@ const SourceEditor = forwardRef<SourceEditorHandle, Props>(function SourceEditor
       if (!reduced && element.animate) {
         revealAnimation.current?.cancel();
         revealAnimation.current = element.animate([{ opacity: 0, transform: "translateY(3px)" }, { opacity: 1, transform: "translateY(0)" }],
-          { duration: 180, easing: "cubic-bezier(.16, 1, .3, 1)" });
+          { duration: 260, easing: "cubic-bezier(.16, 1, .3, 1)" });
       }
       element.style.opacity = "1";
     };
@@ -151,7 +152,7 @@ const SourceEditor = forwardRef<SourceEditorHandle, Props>(function SourceEditor
         targetAnimation = line?.animate?.([
           { backgroundColor: "color-mix(in srgb, var(--color-accent, #a5b4fc) 28%, transparent)" },
           { backgroundColor: "color-mix(in srgb, var(--color-accent, #a5b4fc) 14%, transparent)" },
-        ], { duration: 650, easing: "ease-out" });
+        ], { duration: 850, easing: "ease-out" });
       });
     };
     if (position !== null) view.dispatch({ selection: { anchor: position },
@@ -165,9 +166,7 @@ const SourceEditor = forwardRef<SourceEditorHandle, Props>(function SourceEditor
           if (range) view.scrollDOM.scrollTop = top;
           fadeIn(); markArrival();
         } else if (position !== null) {
-          const farAway = Math.abs(top - view.scrollDOM.scrollTop) > view.scrollDOM.clientHeight * 3;
-          if (farAway) { view.scrollDOM.scrollTop = top; fadeIn(); markArrival(); }
-          else stopScroll = animateReaderScroll(view.scrollDOM, () => props.range?.scrollTop ??
+          stopScroll = animateReaderScroll(view.scrollDOM, () => props.range?.scrollTop ??
             view.lineBlockAt(position).top - Math.max(0, (view.scrollDOM.clientHeight - view.lineBlockAt(position).height) * 0.4),
             { reducedMotion: reduced, onFinish: markArrival });
         }

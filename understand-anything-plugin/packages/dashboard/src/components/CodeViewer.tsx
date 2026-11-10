@@ -6,7 +6,7 @@ import { useI18n } from "../contexts/I18nContext";
 import CodeReadingGuide from "./CodeReadingGuide";
 import type { ReadingNotesResult } from "../readingNotes";
 import SourceEditor, { type SourceEditorHandle } from "./SourceEditor";
-import { findDefinitions, isCodeNavigationIndex, type CodeSymbol } from "../codeNavigation";
+import { findDefinitions, findPackageScopes, isCodeNavigationIndex, type CodeSymbol } from "../codeNavigation";
 import type { GraphNode } from "@understand-anything/core/types";
 import { useCodeReadingState } from "../codeReadingState";
 const NO_NOTES: NonNullable<ReadingNotesResult["notes"]> = [];
@@ -181,7 +181,7 @@ export default function CodeViewer({
   useEffect(() => {
     if (!graph || accessToken === "__demo__") return;
     const saved = useCodeReadingState.getState();
-    if (saved.graphIdentity === graph && saved.index && indexVersion === 0) return;
+    if (saved.graphIdentity === graph && saved.index?.capabilities?.includes("package-scopes") && indexVersion === 0) return;
     const controller = new AbortController();
     setIndex(null);
     fetch(`/code-navigation.json?${new URLSearchParams({ token: accessToken })}`, { signal: controller.signal, cache: "no-store" })
@@ -286,8 +286,17 @@ export default function CodeViewer({
       ?? graph?.nodes.find(n => n.filePath === symbol.filePath);
     if (target) navigate(target.id, symbol);
   };
-  const lookup = (name: string, receiver?: string) => {
+  const lookup = (name: string, receiver?: string, intent: "package" | "symbol" = "symbol") => {
     if (!index) { setNavigationMessage(chinese ? "符号索引尚未就绪，请稍后重试。" : "The symbol index is not ready yet."); return; }
+    if (intent === "package") {
+      const scopes = findPackageScopes(index, name, node.filePath ?? "");
+      if (scopes.length) {
+        followSymbol(scopes[0]);
+        setCandidates(scopes.slice(1));
+        setNavigationMessage(chinese ? `“${name}” 是包访问范围限定符，已定位到当前文件的包声明。下方可继续查看该范围内已索引的文件。` : `“${name}” is a package visibility scope. Opened its package declaration; indexed files in this scope are listed below.`);
+      } else { setCandidates([]); setNavigationMessage(chinese ? `“${name}” 是包访问范围限定符，当前索引没有对应的包声明。` : `“${name}” is a package scope whose declaration is not indexed.`); }
+      return;
+    }
     const results = findDefinitions(index, name, node.filePath ?? "", receiver);
     if (results.length === 1) followSymbol(results[0]);
     else {

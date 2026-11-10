@@ -8,7 +8,8 @@ This fork adds a reading guide to the local Dashboard source viewer. Business so
 - Passage explanations displayed inline, with clickable line ranges that scroll and highlight the corresponding code.
 - A read-only CodeMirror 6 editor with Ctrl/Cmd-click and F12 to open indexed definitions.
 - Same-file and cross-file navigation, an explicit candidate list for overloaded or same-named definitions, and Back / Alt-Left to return to the previous line and scroll position.
-- Nearby jumps use a short, cancelable easing motion; file changes and distant jumps fade in at the destination. A subtle arrival highlight identifies the target. Manual scrolling cancels navigation motion, and reduced-motion preferences disable it.
+- Same-file jumps use a short, cancelable easing motion at every distance; file changes fade in at the destination. A subtle arrival highlight identifies the target. Manual scrolling cancels navigation motion, and reduced-motion preferences disable it.
+- Scala package visibility qualifiers such as `private[coprocessor]` locate the current file's package declaration and list indexed files in that scope, separately from function/class lookup.
 - Navigation to related files while keeping the reader open; Ctrl/Cmd-F for in-file search.
 - A toggle to hide explanations, Scala/Java highlighting, and a larger reading panel.
 - Source-hash validation: outdated notes are hidden until reviewed.

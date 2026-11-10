@@ -9,7 +9,7 @@ const parsedFiles = new Map<string, { sha256: string; symbols: CodeSymbol[] }>()
 
 /** Builds an index of actual declarations, using the same parsers as /understand. */
 export function buildCodeNavigationIndex(projectRoot: string, graph: { nodes: { filePath?: string }[] }, parser: Analyzer): CodeNavigationIndex {
-  const result: CodeNavigationIndex = { version: 1, symbols: [], files: [], skipped: [] };
+  const result: CodeNavigationIndex = { version: 1, symbols: [], files: [], skipped: [], capabilities: ["package-scopes"] };
   const root = fs.realpathSync(projectRoot);
   let totalBytes = 0;
   const paths = [...new Set(graph.nodes.map(n => n.filePath).filter((p): p is string => Boolean(p)))].sort();
@@ -38,6 +38,21 @@ export function buildCodeNavigationIndex(projectRoot: string, graph: { nodes: { 
         if (!analysis) { result.skipped.push({ path: relative, reason: "unsupported-language" }); continue; }
         symbols = [];
         const sourceLines = source.split(/\r?\n/);
+        if (/\.(scala|java|kt)$/.test(relative)) {
+          // Inspect only the package header, before imports/declarations. Preserve
+          // newlines while stripping license comments so locations stay exact.
+          const headerLines = source.replace(/\/\*[\s\S]*?\*\//g, comment => comment.replace(/[^\r\n]/g, " ")).split(/\r?\n/);
+          let prefix = "";
+          for (const [offset, line] of headerLines.entries()) {
+            if (!line.trim() || line.trim().startsWith("//")) continue;
+            const match = /^\s*package\s+(?!object\b)([\w$]+(?:\.[\w$]+)*)\s*(?:;|\{|$)/.exec(line);
+            if (!match) break;
+            const name = prefix ? `${prefix}.${match[1]}` : match[1];
+            symbols.push({ id: `package:${relative}:${name}:${offset + 1}`, name, kind: "package", filePath: relative,
+              startLine: offset + 1, endLine: offset + 1, sha256, signature: line.trim() });
+            prefix = name;
+          }
+        }
         for (const [kind, declarations] of [["function", analysis.functions], ["class", analysis.classes]] as const) {
           for (const declaration of declarations) {
             const [startLine, endLine] = declaration.lineRange;

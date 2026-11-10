@@ -4,12 +4,17 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { buildCodeNavigationIndex } from "../../server/codeNavigation";
-import { findDefinitions, isCodeNavigationIndex, type CodeNavigationIndex, type CodeSymbol } from "../codeNavigation";
+import { findDefinitions, findPackageScopes, isCodeNavigationIndex, lookupIntent, type CodeNavigationIndex, type CodeSymbol } from "../codeNavigation";
 
 const symbol = (filePath: string, startLine = 1, owner = "Example"): CodeSymbol => ({
   id: `${filePath}:${startLine}`, name: "run", kind: "function", filePath, startLine, endLine: startLine + 1, owner, sha256: "hash",
 });
 describe("indexed definition candidates", () => {
+  it("recognizes package qualifiers separately from calls", () => {
+    expect(lookupIntent("  private[")).toBe("package");
+    expect(lookupIntent("protected[foo.")).toBe("package");
+    expect(lookupIntent("  foo.")).toBe("symbol");
+  });
   const index: CodeNavigationIndex = { version: 1, files: [], skipped: [], symbols: [symbol("other.scala"), symbol("current.scala", 2), symbol("current.scala", 8, "Other")] };
   it("keeps ambiguous and overloaded definitions instead of guessing", () => {
     expect(findDefinitions(index, "run", "current.scala")).toHaveLength(3);
@@ -38,6 +43,16 @@ describe("source declaration preprocessing", () => {
   }
   const parser = { analyzeFile: () => ({ functions: [{ name: "run", lineRange: [2, 2] as [number, number], params: [] }],
     classes: [{ name: "Example", lineRange: [1, 3] as [number, number], methods: ["run"], properties: [] }], imports: [], exports: [] }) };
+  it("locates the package scope in the current project instead of treating it as a method", () => {
+    const root = fixture();
+    const source = "/* license */\npackage example.reader.coprocessor\nobject Example { private[coprocessor] def run() = 1 }\n";
+    fs.writeFileSync(path.join(root, "Example.scala"), source);
+    fs.writeFileSync(path.join(root, "Other.scala"), source.replace("Example", "Other"));
+    const index = buildCodeNavigationIndex(root, { nodes: [{ filePath: "Example.scala" }, { filePath: "Other.scala" }] }, parser);
+    expect(findPackageScopes(index, "coprocessor", "Other.scala").map(s => s.filePath)).toEqual(["Other.scala", "Example.scala"]);
+    expect(findPackageScopes(index, "coprocessor", "Example.scala")[0]).toMatchObject({ kind: "package", startLine: 2, name: "example.reader.coprocessor" });
+    expect(findDefinitions(index, "coprocessor", "Example.scala")).toEqual([]);
+  });
   it("derives declaration locations and owners and binds them to source bytes", () => {
     const root = fixture();
     const result = buildCodeNavigationIndex(root, { nodes: [{ filePath: "Example.scala" }] }, parser);
