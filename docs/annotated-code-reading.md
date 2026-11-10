@@ -18,6 +18,29 @@ Navigation covers indexed graph files and annotated passages. It is a declaratio
 
 Notes are authored separately; installing this extension does not automatically explain every file. Version-check failures appear as compact, localized status messages with a retry action. Expired access URLs are distinguished from source changes.
 
+## Dependency source definitions
+
+Project graph files do not include standard-library definitions such as Scala's `Option`. To browse dependencies in the same reader, download and extract the **matching dependency version's source archive** into a separate directory. Add a `code-libraries.json` beside the project's graph:
+
+```json
+{
+  "libraries": [
+    {
+      "id": "scala-library-2.10.7",
+      "name": "Scala standard library",
+      "version": "2.10.7",
+      "root": "/path/to/extracted/scala-library-sources"
+    }
+  ]
+}
+```
+
+Use the version declared by your project's build; the example version is not a universal default. For read-only projects, place the manifest at `<UNDERSTAND_READING_NOTES_DIR>/<project-key>.libraries.json`, using the project-key calculation below. No dependency download or root discovery happens automatically.
+
+Definitions show their library version, source path, and declaration signature. Dependency files open under a separate `@library/` namespace; they do not become project graph nodes. Project declarations take precedence over same-named dependency symbols. Unknown libraries, paths outside configured roots, and outbound symlinks cannot be previewed. A missing dependency configuration does not prevent project-only navigation.
+
+Each configured library indexes up to 1,000 source files, bounded by the source-size limits above. The view shows project and dependency coverage separately. Navigation history, dependency source identity, and the loaded symbol index survive switching between the sidebar and expanded reader. They reset when the project graph changes.
+
 ## Add notes
 
 Analyze your project with the `understand` skill. Put `code-notes.json` beside `knowledge-graph.json`, normally in `<project>/.ua/` (or the existing legacy `.understand-anything/` directory).

@@ -5,8 +5,10 @@ import { useDashboardStore } from "../store";
 import { useI18n } from "../contexts/I18nContext";
 import CodeReadingGuide from "./CodeReadingGuide";
 import type { ReadingNotesResult } from "../readingNotes";
-import SourceEditor, { type EditorLocation, type SourceEditorHandle } from "./SourceEditor";
-import { findDefinitions, isCodeNavigationIndex, type CodeNavigationIndex, type CodeSymbol } from "../codeNavigation";
+import SourceEditor, { type SourceEditorHandle } from "./SourceEditor";
+import { findDefinitions, isCodeNavigationIndex, type CodeSymbol } from "../codeNavigation";
+import type { GraphNode } from "@understand-anything/core/types";
+import { useCodeReadingState } from "../codeReadingState";
 const NO_NOTES: NonNullable<ReadingNotesResult["notes"]> = [];
 
 interface CodeViewerProps {
@@ -24,6 +26,7 @@ interface SourceFile {
   sizeBytes: number;
   lineCount: number;
   readingNotes?: ReadingNotesResult;
+  library?: { id: string; name: string; version: string };
 }
 
 type SourceState =
@@ -137,12 +140,17 @@ export default function CodeViewer({
   const viewMode = useDashboardStore((s) => s.viewMode);
   const codeViewerNodeId = useDashboardStore((s) => s.codeViewerNodeId);
   const closeCodeViewer = useDashboardStore((s) => s.closeCodeViewer);
+  const dependencyPath = codeViewerNodeId?.startsWith("library-source:") ? codeViewerNodeId.slice("library-source:".length) : null;
+  const dependencyNode: GraphNode | null = dependencyPath ? { id: codeViewerNodeId!, type: "file",
+    name: dependencyPath.split("/").pop() ?? dependencyPath, filePath: dependencyPath,
+    summary: "Dependency source · 依赖库源码", tags: [], complexity: "moderate" } : null;
   const activeGraph = viewMode === "domain" && domainGraph ? domainGraph : graph;
   // Files tab always builds its tree from the structural graph, so a node ID opened from
   // there may not exist in the active (domain) graph — fall back to the structural graph.
   const node =
     activeGraph?.nodes.find((n) => n.id === codeViewerNodeId) ??
     graph?.nodes.find((n) => n.id === codeViewerNodeId) ??
+    dependencyNode ??
     null;
   const [state, setState] = useState<SourceState>({
     status: "idle",
@@ -153,13 +161,17 @@ export default function CodeViewer({
   // source for line numbers / lineRange highlighting.
   const [mdView, setMdView] = useState<"rendered" | "source">("rendered");
   const [showGuide, setShowGuide] = useState(true);
-  const [passage, setPassage] = useState<{ start: number; end: number; id?: string; filePath?: string; sha256?: string; scrollTop?: number } | null>(null);
+  const passage = useCodeReadingState(s => s.passage);
+  const setPassage = useCodeReadingState(s => s.setPassage);
   const editorRef = useRef<SourceEditorHandle>(null);
-  const [index, setIndex] = useState<CodeNavigationIndex | null>(null);
+  const index = useCodeReadingState(s => s.index);
+  const setIndex = useCodeReadingState(s => s.setIndex);
   const [indexVersion, setIndexVersion] = useState(0);
   const [navigationMessage, setNavigationMessage] = useState("");
   const [candidates, setCandidates] = useState<CodeSymbol[]>([]);
-  const [history, setHistory] = useState<{ nodeId: string; filePath: string; location: EditorLocation; sha256?: string }[]>([]);
+  const history = useCodeReadingState(s => s.history);
+  const setHistory = useCodeReadingState(s => s.setHistory);
+  const prepareForGraph = useCodeReadingState(s => s.prepareForGraph);
   const { t, localeKey } = useI18n();
   const chinese = localeKey.startsWith("zh");
   const jumpTo = (start: number, end: number, id?: string) => {
@@ -168,6 +180,8 @@ export default function CodeViewer({
   };
   useEffect(() => {
     if (!graph || accessToken === "__demo__") return;
+    const saved = useCodeReadingState.getState();
+    if (saved.graphIdentity === graph && saved.index && indexVersion === 0) return;
     const controller = new AbortController();
     setIndex(null);
     fetch(`/code-navigation.json?${new URLSearchParams({ token: accessToken })}`, { signal: controller.signal, cache: "no-store" })
@@ -180,8 +194,8 @@ export default function CodeViewer({
         if (!controller.signal.aborted) setNavigationMessage(chinese ? "符号索引暂不可用，可重新建立索引。" : "Symbol index unavailable. Rebuild to retry.");
       });
     return () => controller.abort();
-  }, [accessToken, graph, indexVersion, chinese]);
-  useEffect(() => { setHistory([]); setCandidates([]); }, [graph]);
+  }, [accessToken, graph, indexVersion, chinese, setIndex]);
+  useEffect(() => { prepareForGraph(graph); setCandidates([]); }, [graph, prepareForGraph]);
 
   useEffect(() => {
     if (!node?.filePath) {
@@ -246,7 +260,12 @@ export default function CodeViewer({
     ? `${t.codeViewer.lines} ${highlightedRange.start}-${highlightedRange.end}`
     : t.codeViewer.fullFile;
   const isModal = presentation === "modal";
-  const handleClose = onClose ?? closeCodeViewer;
+  const rememberPosition = () => {
+    const location = editorRef.current?.getLocation();
+    if (location && node.filePath) setPassage({ start: location.line, end: location.line, filePath: node.filePath,
+      sha256: source?.sha256, scrollTop: location.scrollTop });
+  };
+  const handleClose = () => { rememberPosition(); (onClose ?? closeCodeViewer)(); };
   const navigate = (id: string, symbol?: CodeSymbol) => {
     if (node.filePath) setHistory(old => [...old, { nodeId: node.id, filePath: node.filePath!,
       location: editorRef.current?.getLocation() ?? { line: 1, scrollTop: 0 }, sha256: source?.sha256 }].slice(-50));
@@ -258,6 +277,11 @@ export default function CodeViewer({
     useDashboardStore.setState({ codeViewerNodeId: id });
   };
   const followSymbol = (symbol: CodeSymbol) => {
+    if (symbol.libraryId) {
+      const id = `library-source:${symbol.filePath}`;
+      navigate(id, symbol);
+      return;
+    }
     const target = graph?.nodes.find(n => n.filePath === symbol.filePath && n.name === symbol.name && n.type === symbol.kind)
       ?? graph?.nodes.find(n => n.filePath === symbol.filePath);
     if (target) navigate(target.id, symbol);
@@ -269,7 +293,7 @@ export default function CodeViewer({
     else {
       setCandidates(results);
       setNavigationMessage(results.length ? (chinese ? `“${name}” 有多个定义，请选择：` : `Choose a definition for “${name}”:`)
-        : (chinese ? `“${name}” 在已索引的图谱文件中没有定义。` : `No definition for “${name}” in indexed graph files.`));
+        : (chinese ? `“${name}” 未在当前项目或已接入的依赖源码中找到。其他源码和依赖尚未索引，不代表它没有定义。` : `“${name}” was not found in indexed project or dependency sources. Other sources have not been indexed.`));
     }
   };
   const goBack = () => {
@@ -317,7 +341,7 @@ export default function CodeViewer({
           {onExpand && (
             <button
               type="button"
-              onClick={onExpand}
+              onClick={() => { rememberPosition(); onExpand(); }}
               className="text-text-muted hover:text-text-primary transition-colors"
               title={t.codeViewer.openLarger}
               aria-label={t.codeViewer.openLarger}
@@ -345,17 +369,19 @@ export default function CodeViewer({
         <button type="button" onClick={goBack} disabled={!history.length} className="text-accent disabled:opacity-30">← {chinese ? "返回上一处" : "Back"}</button>
         <span className="text-text-muted">Ctrl / ⌘ + {chinese ? "点击" : "click"} · F12 {chinese ? "查看索引定义" : "indexed definitions"} · Ctrl+F {chinese ? "查找" : "find"}</span>
         <button type="button" onClick={() => setIndexVersion(v => v + 1)} className="ml-auto text-accent">{chinese ? "重建索引" : "Rebuild index"}</button>
-        <span className="text-text-muted">{index ? `${index.files.length} ${chinese ? "个图谱文件" : "graph files"}${index.skipped.length ? ` · ${index.skipped.length} ${chinese ? "个未索引" : "not indexed"}` : ""}` : (chinese ? "索引加载中" : "Loading index")}</span>
+        <span className="text-text-muted">{index ? `${index.files.filter(f => !f.libraryId).length} ${chinese ? "个项目文件" : "project files"} · ${index.files.filter(f => f.libraryId).length} ${chinese ? "个依赖文件" : "dependency files"}${index.skipped.length ? ` · ${index.skipped.length} ${chinese ? "个未索引" : "not indexed"}` : ""}` : (chinese ? "索引加载中" : "Loading index")}</span>
       </div>
       {(navigationMessage || staleIndex) && <div role="status" className="shrink-0 border-b border-border-subtle p-3 text-xs bg-elevated text-text-secondary max-h-48 overflow-auto">
         <p>{staleIndex ? (chinese ? "目标源码已变化，已停止行号跳转，请重建索引。" : "Target source changed. Rebuild the index before jumping.") : navigationMessage}</p>
         {candidates.map(symbol => <button key={symbol.id} type="button" onClick={() => followSymbol(symbol)} className="block w-full text-left mt-2 rounded p-2 hover:bg-accent/10 text-accent">
+          {symbol.libraryName && <span className="text-text-muted">{symbol.libraryName} {symbol.libraryVersion} · </span>}
           {symbol.owner ? `${symbol.owner}.` : ""}{symbol.name} · {symbol.filePath}:L{symbol.startLine}
+          {symbol.signature && <span className="block font-mono text-text-secondary mt-1">{symbol.signature}</span>}
         </button>)}
       </div>}
 
       <div className="flex-1 min-h-0 flex flex-col md:flex-row overflow-hidden">
-      {showGuide && <CodeReadingGuide node={node} graph={activeGraph?.nodes.some(n => n.id === node.id) ? activeGraph : graph}
+      {showGuide && <CodeReadingGuide node={source?.library ? { ...node, summary: `${source.library.name} ${source.library.version} · ${chinese ? "依赖库源码" : "Dependency source"}` } : node} graph={activeGraph?.nodes.some(n => n.id === node.id) ? activeGraph : graph}
         notes={state.source?.path === node.filePath ? state.source?.readingNotes : undefined} chinese={chinese} onJump={jumpTo}
         onNavigate={id => navigate(id)} />}
       <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden bg-root">

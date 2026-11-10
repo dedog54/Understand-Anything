@@ -10,6 +10,7 @@ import type { IncomingMessage, ServerResponse } from "http";
 import { validateReadingNotes, type ReadingNotesResult } from "./src/readingNotes";
 import { buildCodeNavigationIndex } from "./server/codeNavigation";
 import { getDashboardAccessToken } from "./server/accessToken";
+import { addLibraryIndexes, loadCodeLibraries, readLibrarySource } from "./server/codeLibraries";
 import {
   getGraphFreshnessBatch,
   type GraphFreshnessInput,
@@ -35,8 +36,13 @@ async function readCodeNavigationIndex() {
     registry.register(tree);
     return registry;
   })().catch(error => { codeParser = undefined; throw error; });
-  return { statusCode: 200, payload: buildCodeNavigationIndex(projectRootFromGraphFile(graphFile),
-    JSON.parse(fs.readFileSync(graphFile, "utf8")), await codeParser) };
+  const parser = await codeParser;
+  const index = buildCodeNavigationIndex(projectRootFromGraphFile(graphFile), JSON.parse(fs.readFileSync(graphFile, "utf8")), parser);
+  try {
+    return { statusCode: 200, payload: addLibraryIndexes(index, loadCodeLibraries(graphFile, process.env.UNDERSTAND_READING_NOTES_DIR), parser) };
+  } catch {
+    return { statusCode: 200, payload: { ...index, dependencyWarnings: ["Dependency sources could not be loaded. Check code-libraries.json."] } };
+  }
 }
 
 // Legacy directory first — projects analyzed before the `.ua` rename keep
@@ -166,6 +172,10 @@ function readSourceFile(url: URL) {
   }
 
   const projectRoot = projectRootFromGraphFile(graphFile);
+  if (normalizedPath.startsWith(`@library${path.sep}`)) {
+    const source = readLibrarySource(normalizedPath.split(path.sep).join("/"), loadCodeLibraries(graphFile, process.env.UNDERSTAND_READING_NOTES_DIR));
+    return source ? { statusCode: 200, payload: { ...source, language: detectLanguage(source.path) } } : rejectFileRequest("Dependency source not found", 404);
+  }
   const absoluteFile = path.resolve(projectRoot, normalizedPath);
   const relativeToRoot = path.relative(projectRoot, absoluteFile);
   if (

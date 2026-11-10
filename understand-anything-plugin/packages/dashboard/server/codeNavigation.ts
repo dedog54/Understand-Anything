@@ -33,16 +33,19 @@ export function buildCodeNavigationIndex(projectRoot: string, graph: { nodes: { 
       const cached = parsedFiles.get(key);
       let symbols = cached?.sha256 === sha256 ? cached.symbols : undefined;
       if (!symbols) {
-        const analysis = parser.analyzeFile(relative, bytes.toString("utf8"));
+        const source = bytes.toString("utf8");
+        const analysis = parser.analyzeFile(relative, source);
         if (!analysis) { result.skipped.push({ path: relative, reason: "unsupported-language" }); continue; }
         symbols = [];
+        const sourceLines = source.split(/\r?\n/);
         for (const [kind, declarations] of [["function", analysis.functions], ["class", analysis.classes]] as const) {
           for (const declaration of declarations) {
             const [startLine, endLine] = declaration.lineRange;
             if (startLine < 1 || endLine < startLine) continue;
             const owner = kind === "function" ? analysis.classes.filter(c => c.lineRange[0] <= startLine && c.lineRange[1] >= endLine)
               .sort((a, b) => (a.lineRange[1] - a.lineRange[0]) - (b.lineRange[1] - b.lineRange[0]))[0]?.name : undefined;
-            symbols.push({ id: `${kind}:${relative}:${declaration.name}:${startLine}`, name: declaration.name,
+            const signature = sourceLines[startLine - 1]?.trim().slice(0, 200);
+            symbols.push({ id: `${kind}:${relative}:${declaration.name}:${startLine}`, name: declaration.name, signature,
               kind, filePath: relative, startLine, endLine, sha256, ...(owner ? { owner } : {}) });
           }
         }
